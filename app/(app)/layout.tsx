@@ -2,6 +2,13 @@ import { Suspense, type ReactNode } from "react";
 import { BrandMark } from "@/components/brand";
 import { Nav } from "@/components/nav";
 import { UserMenu } from "@/components/user-menu";
+import { getCurrentUser } from "@/lib/auth";
+
+/** The menu, with the admin-only items for admins. Reads the session, so render it under <Suspense>. */
+async function RoleNav() {
+  const user = await getCurrentUser();
+  return <Nav isAdmin={user?.role === "admin"} />;
+}
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -22,8 +29,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
         <p className="hidden px-6 pb-2 text-xs leading-6 font-medium text-white/50 lg:block">เมนูหลัก</p>
-        <Suspense>
-          <Nav />
+        <Suspense fallback={<Nav />}>
+          <RoleNav />
         </Suspense>
         <div className="mx-3 mt-auto mb-3 hidden rounded-xl bg-white/[0.07] px-4 py-3.5 lg:block">
           <Suspense>

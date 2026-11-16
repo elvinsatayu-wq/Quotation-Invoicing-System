@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { BrandMark } from "@/components/brand";
 import { LoginForm } from "@/components/login-form";
 import { getCurrentUser } from "@/lib/auth";
-import { DEMO_USER } from "@/lib/server/seed";
+import Link from "next/link";
 
 export const metadata: Metadata = { title: "เข้าสู่ระบบ · ระบบใบเสนอราคาและใบแจ้งหนี้" };
 
@@ -73,15 +73,15 @@ export default function LoginPage() {
           <p className="mt-1.5 text-sm text-muted">เข้าสู่ระบบเพื่อจัดการเอกสารของคุณ</p>
 
           <div className="mt-8">
-            <LoginForm defaultEmail={DEMO_USER.email} />
+            <LoginForm />
           </div>
 
-          <div className="mt-6 rounded-xl border border-accent/15 bg-accent-soft px-4 py-3 text-sm text-accent">
-            <p className="font-medium">บัญชีทดลอง</p>
-            <p className="mt-0.5 text-accent/80">
-              {DEMO_USER.email} / รหัสผ่าน {DEMO_USER.password}
-            </p>
-          </div>
+          <p className="mt-6 text-center text-sm text-muted">
+            ยังไม่มีบัญชี?{" "}
+            <Link href="/register" className="font-medium text-accent hover:underline">
+              สมัครใช้งาน
+            </Link>
+          </p>
         </div>
       </section>
     </main>

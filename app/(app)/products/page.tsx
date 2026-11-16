@@ -2,11 +2,12 @@ import Link from "next/link";
 import { DeleteButton } from "@/components/delete-button";
 import { PageHeader } from "@/components/ui";
 import { deleteProduct } from "@/lib/actions";
+import { requireUser } from "@/lib/auth";
 import { listProducts } from "@/lib/data";
 import { formatMoney } from "@/lib/format";
 
 export default async function ProductsPage() {
-  const products = await listProducts();
+  const [products, user] = await Promise.all([listProducts(), requireUser()]);
 
   return (
     <>
@@ -48,7 +49,9 @@ export default async function ProductsPage() {
                     <Link href={`/products/${product.id}`} className="btn">
                       แก้ไข
                     </Link>
-                    <DeleteButton name={product.name} action={deleteProduct.bind(null, product.id)} />
+                    {user.role === "admin" && (
+                      <DeleteButton name={product.name} action={deleteProduct.bind(null, product.id)} />
+                    )}
                   </div>
                 </td>
               </tr>

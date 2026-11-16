@@ -2,11 +2,11 @@ import Link from "next/link";
 import { BillingStatusBadge, PageHeader, ReceiptStatusBadge, StatusBadge } from "@/components/ui";
 import { DeleteButton } from "@/components/delete-button";
 import { deleteDocument } from "@/lib/actions";
+import { requireUser } from "@/lib/auth";
 import { listAllDocuments } from "@/lib/data";
 import { canDeleteDocument, editBlockReason } from "@/lib/document-rules";
 import { DOC_TYPE_LABEL, formatDate, formatMoney, STATUS_LABEL } from "@/lib/format";
-import type { DocumentListRow } from "@/lib/server/document-list";
-import type { DocStatus } from "@/lib/types";
+import type { DocStatus, DocumentListRow } from "@/lib/types";
 
 const PAGE_SIZE = 50;
 
@@ -134,7 +134,10 @@ export default async function DocumentsPage({
   const page = Math.max(1, Number(pageParam) || 1);
   const from = (page - 1) * PAGE_SIZE;
 
-  const { rows, total } = await listAllDocuments({ type, status, limit: PAGE_SIZE, offset: from });
+  const [{ rows, total }, user] = await Promise.all([
+    listAllDocuments({ type, status, limit: PAGE_SIZE, offset: from }),
+    requireUser(),
+  ]);
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -235,7 +238,7 @@ export default async function DocumentsPage({
                     >
                       PDF
                     </Link>
-                    {canDeleteDocument(row.type, row.status) && (
+                    {user.role === "admin" && canDeleteDocument(row.type, row.status) && (
                       <span className="ml-3 align-top">
                         <DeleteButton
                           variant="link"

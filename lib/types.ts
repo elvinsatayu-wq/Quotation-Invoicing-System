@@ -198,3 +198,22 @@ export type DocumentItemInput = {
   unit_price: number;
   vat_applicable: boolean;
 };
+
+/**
+ * One row of the combined document list (the document_list view). Billing notes use the
+ * state issued / paid / cancelled, receipts and tax invoices issued / cancelled.
+ */
+export type DocumentListRow = {
+  id: string;
+  type: "QT" | "IV" | "BL" | "RC" | "TX";
+  status: string;
+  doc_number: string;
+  customer_name: string;
+  issue_date: string;
+  due_date: string;
+  grand_total: number;
+  net_total: number;
+  is_overdue: boolean;
+  has_invoice: boolean;
+  has_tax_invoice: boolean;
+};

@@ -1,24 +1,52 @@
-// Mock auth for local use: a demo user in SQLite and an httpOnly session cookie.
-import { cookies } from "next/headers";
+// Supabase Auth plus the role in public.profiles (admin | user | pending).
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { cache } from "react";
-import { db } from "./server/db";
-import { getSessionUser, type User } from "./server/users";
+import { createClient } from "./supabase/server";
 
-export const SESSION_COOKIE = "qi_session";
+export type Role = "admin" | "user" | "pending";
 
-/** The signed-in user, or null. Reads the request cookie, so call it under <Suspense>. */
+export type User = { id: string; email: string; name: string; role: Role };
+
+export const ROLE_LABEL: Record<Role, string> = {
+  admin: "ผู้ดูแลระบบ (Admin)",
+  user: "ผู้ใช้งาน (User)",
+  pending: "รออนุมัติ",
+};
+
+/** The signed-in user, or null. Reads the request cookies, so call it under <Suspense>. */
 export const getCurrentUser = cache(async (): Promise<User | null> => {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  // Session expiry and "today" depend on the clock, so render this at request time.
   await connection();
-  return token ? getSessionUser(db(), token) : null;
+  const supabase = await createClient();
+  // getClaims verifies the session token, unlike getSession which trusts the cookie.
+  const { data } = await supabase.auth.getClaims();
+  const userId = data?.claims?.sub;
+  if (!userId) return null;
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("email, full_name, role")
+    .eq("id", userId)
+    .maybeSingle();
+  const email = profile?.email ?? String(data.claims.email ?? "");
+  return {
+    id: userId,
+    email,
+    name: profile?.full_name || email,
+    role: (profile?.role as Role | undefined) ?? "pending",
+  };
 });
 
-/** The signed-in user; anyone else is sent to the login page. */
+/** An approved user (admin or user). Others go to the login or waiting page. */
 export async function requireUser(): Promise<User> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.role === "pending") redirect("/pending");
+  return user;
+}
+
+export async function requireAdmin(): Promise<User> {
+  const user = await requireUser();
+  if (user.role !== "admin") redirect("/");
   return user;
 }

@@ -1,21 +1,40 @@
 # ระบบใบเสนอราคาและใบแจ้งหนี้
 
 ระบบจัดการเอกสารสำหรับธุรกิจขนาดเล็ก ใช้ Next.js (App Router) และ Tailwind CSS
-เก็บข้อมูลในไฟล์ SQLite บนเครื่อง ไม่ต้องใช้ Docker, Supabase หรือบริการภายนอกใด ๆ
+เก็บข้อมูลและจัดการการล็อกอินด้วย [Supabase](https://supabase.com) (Postgres + Supabase Auth)
 
 ## เริ่มใช้งาน
 
-ต้องมี Node.js 22.18 ขึ้นไป (แนะนำ Node 24) ใช้ SQLite ที่มากับ Node (`node:sqlite`) จึงไม่ต้องติดตั้งฐานข้อมูลเพิ่ม
+ต้องมี Node.js 22.18 ขึ้นไป (แนะนำ Node 24)
 
-```bash
-npm install
-npm run dev         # http://localhost:3000
-```
+1. **สร้างตาราง:** เปิด Supabase Dashboard → SQL Editor → New query → วางเนื้อหาไฟล์ `supabase/schema.sql` ทั้งไฟล์ → Run
+2. **ตั้งค่าการเชื่อมต่อ:** คัดลอก `.env.example` เป็น `.env.local` แล้วใส่ Project URL และ Publishable key
+   (Project Settings → API) ใส่ URL โปรเจกต์โดยไม่ต้องมี `/rest/v1/`
+3. **รันแอป:**
 
-เข้าสู่ระบบด้วยบัญชีทดลอง **demo@example.com / demo1234**
+   ```bash
+   npm install
+   npm run dev         # http://localhost:3000
+   ```
 
-ครั้งแรกที่เปิดแอป ระบบจะสร้างไฟล์ `data/app.db` และใส่ข้อมูลตัวอย่างให้อัตโนมัติ
-(บริษัท 1 แห่ง ลูกค้า 5 ราย สินค้า 8 รายการ เอกสาร 14 ใบ โดยวันที่อิงจากวันที่สร้างฐานข้อมูล)
+4. **สร้างผู้ดูแลระบบ:** ไปที่หน้า "สมัครใช้งาน" บัญชีแรกของระบบจะเป็น Admin อัตโนมัติ
+   จากนั้นกรอกข้อมูลบริษัทที่เมนู "ข้อมูลบริษัท" ก่อนออกเอกสารใบแรก
+
+> Supabase เปิด "Confirm email" ไว้เป็นค่าเริ่มต้น ผู้สมัครต้องกดลิงก์ในอีเมลก่อนเข้าสู่ระบบ
+> ลิงก์จะพากลับมาที่ `/auth/callback` ถ้าเปิดลิงก์แล้วไม่เข้าระบบ ให้เพิ่ม `http://localhost:3000/**`
+> ใน Authentication → URL Configuration → Redirect URLs (หรือปิด Confirm email ถ้าใช้กันภายใน)
+
+## สิทธิ์ผู้ใช้
+
+| สิทธิ์ | ทำอะไรได้ |
+| --- | --- |
+| Admin | ทุกอย่าง รวมถึงแก้ข้อมูลบริษัท ลบเอกสาร/ลูกค้า/สินค้า และกำหนดสิทธิ์ผู้ใช้ที่เมนู "ผู้ใช้งาน" |
+| User | ดูข้อมูลทั้งหมด สร้างและแก้ไขเอกสาร ลูกค้า สินค้า เปลี่ยนสถานะ ออกใบเสร็จ แต่ลบไม่ได้ |
+| รออนุมัติ | บัญชีที่สมัครใหม่ (ยกเว้นบัญชีแรก) เข้าดูข้อมูลไม่ได้จนกว่า Admin จะให้สิทธิ์ |
+
+สิทธิ์ถูกบังคับในฐานข้อมูลด้วย Row Level Security ไม่ใช่แค่ซ่อนปุ่มในหน้าเว็บ
+Publishable key จึงเปิดเผยได้ ผู้ที่ไม่ได้ล็อกอินอ่านหรือเขียนข้อมูลไม่ได้
+เอกสารทุกประเภทบันทึกผ่านฟังก์ชันในฐานข้อมูลเท่านั้น (เลขที่เอกสาร ยอดเงิน และกฎสถานะจึงข้ามไม่ได้แม้เรียก API ตรง)
 
 ## คำสั่ง
 
@@ -23,8 +42,7 @@ npm run dev         # http://localhost:3000
 | --- | --- |
 | `npm run dev` | รันแอปโหมดพัฒนา |
 | `npm run build` / `npm run start` | build และรันแบบ production |
-| `npm run db:reset` | ลบ `data/app.db` แล้วสร้างใหม่พร้อมข้อมูลตัวอย่าง (หยุดแอปก่อน) |
-| `npm test` | ทดสอบการคำนวณยอดเงิน จำนวนเงินเป็นตัวอักษร และกฎของเอกสาร |
+| `npm test` | ทดสอบการคำนวณยอดเงิน จำนวนเงินเป็นตัวอักษร และ `supabase/schema.sql` ทั้งสิทธิ์และกฎของเอกสาร (รันบน PGlite ในเครื่อง ไม่แตะข้อมูลจริงใน Supabase) |
 | `npm run lint` | ตรวจโค้ดด้วย ESLint |
 
 > ชื่อโฟลเดอร์มีเครื่องหมาย `&` ซึ่งทำให้ไฟล์ `.cmd` ใน `node_modules/.bin` ทำงานไม่ได้บน Windows
@@ -33,24 +51,23 @@ npm run dev         # http://localhost:3000
 ## โครงสร้าง
 
 ```
-app/(app)/               หน้าที่ต้องล็อกอิน: ภาพรวม, documents, billing-notes, receipts, tax-invoices, customers, products, company
-app/login/               หน้าเข้าสู่ระบบ
-app/print/                หน้าเอกสาร A4 สำหรับพิมพ์และบันทึก PDF ([id] = QT/IV, billing/[id] = ใบวางบิล, receipt/[id] = ใบเสร็จ, tax-invoice/[id] = ใบส่งของ/ใบกำกับภาษี)
-proxy.ts                 ส่งผู้ที่ยังไม่มี session cookie ไปหน้า /login
+app/(app)/               หน้าที่ต้องล็อกอิน: ภาพรวม, documents, billing-notes, receipts, tax-invoices, customers, products, company, users (Admin)
+app/login/, app/register/, app/pending/   เข้าสู่ระบบ สมัครใช้งาน และหน้ารออนุมัติ
+app/auth/callback/       รับลิงก์ยืนยันอีเมลจาก Supabase
+app/print/               หน้าเอกสาร A4 สำหรับพิมพ์และบันทึก PDF
+proxy.ts                 ต่ออายุ session ของ Supabase และส่งผู้ที่ยังไม่ล็อกอินไปหน้า /login
 components/              ฟอร์ม, Document Builder, ปุ่มสถานะเอกสาร, กราฟ
-lib/auth.ts              อ่าน session ของผู้ใช้ (requireUser)
+lib/supabase/            ตั้งค่าและสร้าง Supabase client ฝั่งเซิร์ฟเวอร์
+lib/auth.ts              ผู้ใช้ปัจจุบันและสิทธิ์ (requireUser, requireAdmin)
 lib/data.ts              ฟังก์ชันอ่านข้อมูลสำหรับหน้าเว็บ ตรวจ session ทุกครั้ง
-lib/actions.ts           Server Actions สำหรับบันทึกข้อมูล
-lib/calc.ts              คำนวณยอดเงิน ใช้ร่วมกันทั้งหน้า Builder และตอนบันทึก
-lib/server/db.ts         เปิดไฟล์ SQLite และสร้างตาราง
-lib/server/store.ts      คำสั่งอ่าน/เขียนข้อมูลและกฎของเอกสารทั้งหมด
-lib/server/seed.ts       ข้อมูลตัวอย่างและบัญชีทดลอง
-lib/server/users.ts      ผู้ใช้และ session ของระบบล็อกอินจำลอง
+lib/actions.ts           Server Actions สำหรับบันทึกข้อมูล (เรียกฟังก์ชันในฐานข้อมูล)
+lib/calc.ts              คำนวณยอดเงินในหน้า Builder (ฐานข้อมูลคำนวณแบบเดียวกันตอนบันทึก)
+supabase/schema.sql      ตาราง, view, ฟังก์ชันกฎของเอกสาร, สิทธิ์และ Row Level Security
+supabase/schema.test.ts  ทดสอบ schema.sql บน PGlite
 ```
 
-ตารางในฐานข้อมูล: `companies`, `customers`, `products`, `documents`, `document_items`,
-`billing_notes`, `billing_note_items`, `receipts`, `receipt_items`, `tax_invoices`, `document_sequences` (ตัวนับเลขเอกสาร), `users`, `sessions`
-เปิดดูไฟล์ `data/app.db` ได้ด้วยโปรแกรมอย่าง [DB Browser for SQLite](https://sqlitebrowser.org/)
+ตารางในฐานข้อมูล: `profiles` (สิทธิ์ผู้ใช้), `companies`, `customers`, `products`, `documents`, `document_items`,
+`billing_notes`, `billing_note_items`, `receipts`, `receipt_items`, `tax_invoices`, `document_sequences` (ตัวนับเลขเอกสาร)
 
 ## กฎของเอกสาร
 
@@ -127,12 +144,3 @@ lib/server/users.ts      ผู้ใช้และ session ของระบ�
 - ใช้การพิมพ์ของเบราว์เซอร์ ภาษาไทยจึงแสดงถูกต้องทุกตัวอักษร โดยไม่ต้องติดตั้งไลบรารี PDF
 - มีจำนวนเงินเป็นตัวอักษร (`lib/bahttext.ts`) และช่องลงลายมือชื่อ
 - เอกสารสถานะร่างหรือยกเลิกจะมีตราประทับ "ร่าง" / "ยกเลิก" กำกับ
-
-## ระบบล็อกอินจำลอง
-
-ใช้สำหรับทดลองบนเครื่องเท่านั้น: มีผู้ใช้ทดลองคนเดียวในตาราง `users` (รหัสผ่านเก็บแบบ scrypt hash)
-เมื่อล็อกอินแล้วจะได้ session cookie แบบ httpOnly อายุ 7 วัน ทุกหน้าและทุก Server Action ตรวจ session ก่อนอ่านหรือเขียนข้อมูล
-ยังไม่มีหน้าสมัครสมาชิก แยกสิทธิ์ผู้ใช้ หรือรีเซ็ตรหัสผ่าน ต้องเปลี่ยนเป็นระบบล็อกอินจริงก่อนเปิดให้คนอื่นใช้งานผ่านเครือข่าย
-
-> `npm run start` (production) ตั้งค่า cookie เป็น `Secure` ซึ่งเบราว์เซอร์ยอมรับบน `http://localhost` ได้
-> ถ้าเปิดผ่าน IP อื่นที่ไม่ใช่ HTTPS แล้วล็อกอินไม่ติด ให้ตั้ง `INSECURE_COOKIES=1` ก่อนรัน

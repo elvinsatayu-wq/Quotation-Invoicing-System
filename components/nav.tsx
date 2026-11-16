@@ -74,14 +74,25 @@ const LINKS = [
       </>,
     ),
   },
+  {
+    href: "/users",
+    label: "ผู้ใช้งาน",
+    adminOnly: true,
+    icon: icon(
+      <>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 21a8 8 0 0 1 16 0" />
+      </>,
+    ),
+  },
 ];
 
-export function Nav() {
+export function Nav({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-col lg:px-3 lg:pb-0">
-      {LINKS.map(({ href, label, icon, also = [] }) => {
+      {LINKS.filter((link) => isAdmin || !("adminOnly" in link)).map(({ href, label, icon, also = [] }) => {
         const active =
           href === "/" ? pathname === "/" : [href, ...also].some((prefix) => pathname.startsWith(prefix));
         return (

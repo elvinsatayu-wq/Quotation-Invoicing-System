@@ -5,7 +5,7 @@ import { ErrorNote } from "@/components/ui";
 import { login } from "@/lib/auth-actions";
 import type { ActionState } from "@/lib/types";
 
-export function LoginForm({ defaultEmail }: { defaultEmail: string }) {
+export function LoginForm() {
   const [state, action, pending] = useActionState<ActionState, FormData>(login, { error: null });
 
   return (
@@ -18,7 +18,7 @@ export function LoginForm({ defaultEmail }: { defaultEmail: string }) {
           type="email"
           required
           autoComplete="username"
-          defaultValue={state.values?.email ?? defaultEmail}
+          defaultValue={state.values?.email}
           className="input"
         />
       </label>

@@ -5,7 +5,7 @@ import { ErrorNote } from "@/components/ui";
 import { saveCompany } from "@/lib/actions";
 import type { Company } from "@/lib/types";
 
-export function CompanyForm({ company }: { company: Company | null }) {
+export function CompanyForm({ company, readOnly = false }: { company: Company | null; readOnly?: boolean }) {
   const [state, formAction, pending] = useActionState(saveCompany, { error: null });
   const [preview, setPreview] = useState<string | null>(null);
   const [removeLogo, setRemoveLogo] = useState(false);
@@ -28,7 +28,8 @@ export function CompanyForm({ company }: { company: Company | null }) {
   const logo = preview ?? (removeLogo ? null : company?.logo_url);
 
   return (
-    <form action={formAction} className="card grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+    <form action={formAction} className="card p-4">
+      <fieldset disabled={readOnly} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <h2 className="font-medium sm:col-span-2">ข้อมูลผู้ออกเอกสาร</h2>
       <label className="sm:col-span-2">
         <span className="field-label">ชื่อบริษัท / ร้าน *</span>
@@ -148,12 +149,17 @@ export function CompanyForm({ company }: { company: Company | null }) {
             บันทึกข้อมูลบริษัทแล้ว เอกสารทุกใบจะใช้ข้อมูลนี้
           </p>
         )}
-        <div>
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending ? "กำลังบันทึก…" : "บันทึก"}
-          </button>
-        </div>
+        {readOnly ? (
+          <p className="text-sm text-muted">เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่แก้ไขข้อมูลบริษัทได้</p>
+        ) : (
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={pending}>
+              {pending ? "กำลังบันทึก…" : "บันทึก"}
+            </button>
+          </div>
+        )}
       </div>
+      </fieldset>
     </form>
   );
 }

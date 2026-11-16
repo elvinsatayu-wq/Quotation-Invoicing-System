@@ -7,15 +7,17 @@
     "build": "node node_modules/next/dist/bin/next build",
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "node node_modules/eslint/bin/eslint.js",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test lib/calc.test.ts lib/bahttext.test.ts lib/server/store.test.ts",
-    "db:reset": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/db-reset.ts"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test lib/calc.test.ts lib/bahttext.test.ts supabase/schema.test.ts"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.119.0",
     "next": "16.4.5",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^24.19.2",
     "@types/react": "^19",
