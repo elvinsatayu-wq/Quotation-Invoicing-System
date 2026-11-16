@@ -1,0 +1,23 @@
+import type { Metadata } from "next";
+import { IBM_Plex_Sans_Thai } from "next/font/google";
+import type { ReactNode } from "react";
+import "./globals.css";
+
+const plexThai = IBM_Plex_Sans_Thai({
+  variable: "--font-plex-thai",
+  subsets: ["thai", "latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
+export const metadata: Metadata = {
+  title: "ระบบใบเสนอราคาและใบแจ้งหนี้",
+  description: "จัดการใบเสนอราคา ใบแจ้งหนี้ ลูกค้า และสินค้า สำหรับธุรกิจขนาดเล็ก",
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="th" className={`${plexThai.variable} h-full antialiased`}>
+      <body className="min-h-full">{children}</body>
+    </html>
+  );
+}

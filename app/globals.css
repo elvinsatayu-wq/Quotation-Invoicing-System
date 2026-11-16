@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-plex-thai);
+
+  /* White + navy (#1B365D) palette */
+  --color-paper: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-ink: #13233a;
+  --color-muted: #5d6b80;
+  --color-line: #e2e7ef;
+  --color-accent: #1b365d;
+  --color-accent-strong: #12253f;
+  --color-accent-soft: #e9eef6;
+  --color-series: #2f5d96;
+  --color-good: #0d7048;
+  --color-good-soft: #e3f3ec;
+  --color-warn: #8a5a00;
+  --color-warn-soft: #fbf0d9;
+  --color-bad: #b42f25;
+  --color-bad-soft: #fbe9e7;
+
+  --shadow-card: 0 1px 2px rgb(19 35 58 / 0.04), 0 2px 8px rgb(19 35 58 / 0.04);
+  --shadow-lift: 0 6px 20px rgb(27 54 93 / 0.10);
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+
+  .btn {
+    @apply inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-4 text-sm font-medium whitespace-nowrap text-ink shadow-xs transition hover:border-accent/30 hover:bg-accent-soft/60 focus-visible:ring-3 focus-visible:ring-accent/20 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply border-accent bg-accent text-white hover:border-accent-strong hover:bg-accent-strong;
+  }
+
+  .btn-danger {
+    @apply border-bad/30 text-bad hover:border-bad/40 hover:bg-bad-soft;
+  }
+
+  .field-label {
+    @apply mb-1 block text-sm font-medium text-ink/80;
+  }
+
+  .input {
+    @apply min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink transition placeholder:text-muted/70 hover:border-accent/30 focus:border-accent focus:ring-3 focus:ring-accent/15 focus:outline-none disabled:bg-paper;
+  }
+
+  /* Wide tables scroll inside this wrapper so the page itself never scrolls sideways. */
+  .table-scroll {
+    @apply overflow-x-auto;
+  }
+
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .data-table th {
+    @apply border-b border-line bg-accent-soft/60 px-3.5 py-3 text-left text-[13px] font-semibold whitespace-nowrap text-accent;
+  }
+
+  .data-table td {
+    @apply border-b border-line px-3.5 py-3 align-middle;
+  }
+
+  .data-table tbody tr {
+    @apply transition-colors hover:bg-accent-soft/30;
+  }
+
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .num {
+    @apply text-right tabular-nums;
+  }
+
+  .data-table th.num {
+    @apply text-right;
+  }
+}
+
+/* ---- Printable A4 documents (app/print) ---- */
+
+@page {
+  size: A4;
+  margin: 12mm;
+}
+
+.sheet {
+  width: 210mm;
+  min-height: 297mm;
+  padding: 14mm;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
+}
+
+/* Narrow screens: shrink the preview instead of scrolling sideways. */
+@media screen and (max-width: 840px) {
+  .print-root {
+    overflow-x: hidden;
+  }
+  .sheet {
+    zoom: calc(100vw / 220mm);
+  }
+}
+
+.print-table th {
+  border-top: 1.5px solid var(--color-ink);
+  border-bottom: 1.5px solid var(--color-ink);
+  padding: 6px 8px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.print-table td {
+  border-bottom: 1px solid var(--color-line);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.print-table tr,
+.keep-together {
+  break-inside: avoid;
+}
+
+/* Several copies (ต้นฉบับ / สำเนา): a gap on screen, a new page when printed. */
+.sheet + .sheet {
+  margin-top: 6mm;
+}
+
+@media print {
+  body {
+    background: white;
+  }
+  .sheet {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+  .sheet + .sheet {
+    margin-top: 0;
+    break-before: page;
+  }
+  .print-shade,
+  .stamp {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
