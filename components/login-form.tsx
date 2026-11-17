@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
+import { PasswordInput } from "@/components/password-input";
 import { ErrorNote } from "@/components/ui";
 import { login } from "@/lib/auth-actions";
 import type { ActionState } from "@/lib/types";
@@ -32,14 +33,7 @@ export function LoginForm() {
             ลืมรหัสผ่าน?
           </Link>
         </div>
-        <input
-          id="login-password"
-          name="password"
-          type="password"
-          required
-          autoComplete="current-password"
-          className="input"
-        />
+        <PasswordInput id="login-password" name="password" required autoComplete="current-password" className="input" />
       </div>
       <button type="submit" disabled={pending} className="btn btn-primary mt-2 min-h-11 justify-center">
         {pending ? "กำลังเข้าสู่ระบบ…" : "เข้าสู่ระบบ"}
