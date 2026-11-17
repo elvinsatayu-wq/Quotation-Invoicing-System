@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseConfig } from "./lib/supabase/config";
 
-const PUBLIC_PATHS = ["/login", "/register", "/auth/"];
+const PUBLIC_PATHS = ["/login", "/register", "/forgot-password", "/auth/"];
 
 /**
  * Keeps the Supabase session fresh (refreshes the auth cookies) and sends signed-out

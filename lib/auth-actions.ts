@@ -48,6 +48,40 @@ export async function register(_prev: ActionState, form: FormData): Promise<Acti
   redirect("/");
 }
 
+/** Sends a password reset link. The reply is the same whether or not the email has an account. */
+export async function requestPasswordReset(_prev: ActionState, form: FormData): Promise<ActionState> {
+  const email = String(form.get("email") ?? "").trim();
+  const values = { email };
+  if (!email) return { error: "กรุณากรอกอีเมล", values };
+
+  const origin = (await headers()).get("origin") ?? "http://localhost:3000";
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/auth/callback?next=/reset-password`,
+  });
+  // Other errors are not shown, so the form does not reveal which emails have an account.
+  if (error && /rate limit/i.test(error.message)) return { error: authMessage(error.message), values };
+  return { error: null, saved: true, values };
+}
+
+/** Sets a new password for the signed-in user (the session comes from the reset link). */
+export async function updatePassword(_prev: ActionState, form: FormData): Promise<ActionState> {
+  const password = String(form.get("password") ?? "");
+  if (password.length < 6) return { error: "รหัสผ่านต้องยาวอย่างน้อย 6 ตัวอักษร" };
+  if (password !== String(form.get("confirm") ?? "")) return { error: "รหัสผ่านทั้งสองช่องไม่ตรงกัน" };
+
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims) return { error: "ลิงก์หมดอายุหรือถูกใช้ไปแล้ว กรุณาขอลิงก์เปลี่ยนรหัสผ่านใหม่" };
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) {
+    if (/should be different/i.test(error.message)) return { error: "รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม" };
+    if (/password should be at least|rate limit/i.test(error.message)) return { error: authMessage(error.message) };
+    return { error: `เปลี่ยนรหัสผ่านไม่สำเร็จ: ${error.message}` };
+  }
+  redirect("/");
+}
+
 export async function logout() {
   const supabase = await createClient();
   await supabase.auth.signOut();
