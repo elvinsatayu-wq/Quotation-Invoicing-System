@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin, requireUser } from "./auth";
+import { requireAdmin, requireSuperAdmin, requireUser } from "./auth";
 import { AppError } from "./errors";
 import { createClient, dbError, must } from "./supabase/server";
 import type { DeletableType } from "./document-rules";
@@ -298,7 +298,18 @@ export async function deleteDocument(type: DeletableType, id: string): Promise<A
   return run("delete_document", { p_type: type, p_id: id });
 }
 
-export async function setUserRole(userId: string, role: string): Promise<ActionState> {
-  await requireAdmin();
-  return run("set_user_role", { p_user: userId, p_role: role });
+// ---------------------------------------------------------------- accounts (super admin)
+
+/** Sets an account's company and its role there. No company = no access to business data. */
+export async function setUserAccess(userId: string, role: string, companyId: string | null): Promise<ActionState> {
+  await requireSuperAdmin();
+  return run("set_user_access", { p_user: userId, p_role: role, p_company: companyId || null });
+}
+
+/** A new company with a name only; its admin fills in the address and tax ID. */
+export async function createCompany(_prev: ActionState, form: FormData): Promise<ActionState> {
+  await requireSuperAdmin();
+  const result = await save("create_company", { p_name: String(form.get("name") ?? "").trim() });
+  if (result.error) return rejected(new AppError(result.error), form);
+  return { error: null, saved: true };
 }

@@ -5,7 +5,8 @@ export type Company = {
   id: string;
   name: string;
   address: string;
-  tax_id: string;
+  /** Empty until the company admin fills it in (a new company has a name only). */
+  tax_id: string | null;
   branch: string;
   phone: string | null;
   email: string | null;

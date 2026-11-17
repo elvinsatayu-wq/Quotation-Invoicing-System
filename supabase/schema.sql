@@ -1,16 +1,24 @@
 -- =====================================================================================
 -- Quotation & Invoicing System - Supabase schema
 --
--- Run once in the Supabase dashboard: SQL Editor -> New query -> paste this file -> Run.
--- It is safe to run again on an empty project; it does not drop existing data.
+-- New project: SQL Editor -> New query -> paste this file -> Run.
+-- Existing project from before company separation: run
+-- supabase/migrations/001_company_isolation.sql first, then this file.
+-- It is safe to run again; it does not drop existing data.
 --
 -- Security model
---   * Every signed-in account has a row in public.profiles with role admin | user | pending.
---   * The first account to sign up becomes admin; later ones wait as "pending" until an
---     admin approves them in the app (menu "ผู้ใช้งาน").
---   * admin   : everything, including company settings, deleting and managing users
---   * user    : read everything, create and edit documents, customers and products
---   * pending : no access to business data
+--   * Business data is kept per company. Every customer, product, document, billing note,
+--     receipt and tax invoice belongs to one company, and a signed-in account sees and
+--     changes only the data of the company in its profile (row level security + checks in
+--     every function). There is no way through the API to read another company's data.
+--   * public.profiles: company_id + role admin | user | pending within that company.
+--       admin   : everything in the company, including company settings and deleting
+--       user    : read everything in the company, create and edit documents, customers, products
+--       pending : no access to business data (also: any account without a company)
+--   * Super admin (profiles.is_super_admin, the first account to sign up): manages accounts
+--     only, in menu "ผู้ใช้งาน" (approve, set role and company, create companies). A super
+--     admin has no company and cannot be given one, so it never sees any company's data.
+--     The flag can only be changed here in SQL, not through the app or the API.
 --   * The anon (not signed in) role cannot read or write anything.
 --   * Documents, billing notes, receipts and tax invoices are only written through the
 --     functions below, so numbering, totals and status rules cannot be bypassed through
@@ -26,27 +34,61 @@ create or replace function public.today_th() returns date
 language sql stable set search_path = public, pg_temp
 as $$ select (now() at time zone 'Asia/Bangkok')::date $$;
 
--- ------------------------------------------------------------------------------ users
+-- ------------------------------------------------------------------------------ companies & users
+
+-- A company that issues documents. A super admin creates it with a name only; the
+-- company's admin fills in the address and tax ID before the first document.
+create table if not exists public.companies (
+  id                uuid primary key default gen_random_uuid(),
+  name              text not null check (btrim(name) <> ''),
+  address           text not null default '',
+  tax_id            text check (tax_id is null or tax_id ~ '^[0-9]{13}$'),
+  branch            text not null default 'สำนักงานใหญ่',
+  phone             text,
+  email             text,
+  logo_url          text,
+  bank_name         text,
+  bank_account_name text,
+  bank_account_no   text,
+  -- VAT registered: receipts are issued as ใบเสร็จรับเงิน/ใบกำกับภาษี.
+  vat_registered    boolean not null default true,
+  created_at        timestamptz not null default now()
+);
 
 create table if not exists public.profiles (
-  id         uuid primary key references auth.users (id) on delete cascade,
-  email      text not null,
-  full_name  text not null default '',
-  role       text not null default 'pending' check (role in ('admin', 'user', 'pending')),
-  created_at timestamptz not null default now()
+  id             uuid primary key references auth.users (id) on delete cascade,
+  email          text not null,
+  full_name      text not null default '',
+  role           text not null default 'pending' check (role in ('admin', 'user', 'pending')),
+  company_id     uuid references public.companies (id) on delete set null,
+  is_super_admin boolean not null default false,
+  created_at     timestamptz not null default now(),
+  constraint profiles_super_admin_no_company check (not (is_super_admin and company_id is not null))
 );
+
+create index if not exists profiles_company_idx on public.profiles (company_id);
 
 create or replace function public.app_role() returns text
 language sql stable security definer set search_path = public, pg_temp
 as $$ select role from public.profiles where id = auth.uid() $$;
 
+/** The company whose data the signed-in account works with, or null (pending / no company). */
+create or replace function public.app_company() returns uuid
+language sql stable security definer set search_path = public, pg_temp
+as $$ select company_id from public.profiles where id = auth.uid() and role in ('admin', 'user') $$;
+
 create or replace function public.is_member() returns boolean
 language sql stable security definer set search_path = public, pg_temp
-as $$ select coalesce(public.app_role() in ('admin', 'user'), false) $$;
+as $$ select public.app_company() is not null $$;
 
+/** Admin of their own company (not the super admin). */
 create or replace function public.is_admin() returns boolean
 language sql stable security definer set search_path = public, pg_temp
-as $$ select coalesce(public.app_role() = 'admin', false) $$;
+as $$ select public.is_member() and coalesce(public.app_role() = 'admin', false) $$;
+
+create or replace function public.is_super_admin() returns boolean
+language sql stable security definer set search_path = public, pg_temp
+as $$ select coalesce((select is_super_admin from public.profiles where id = auth.uid()), false) $$;
 
 create or replace function public.require_member() returns void
 language plpgsql stable security definer set search_path = public, pg_temp
@@ -66,18 +108,31 @@ begin
   end if;
 end $$;
 
-/** Creates the profile of a new auth user. The very first account becomes admin. */
+create or replace function public.require_super_admin() returns void
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_super_admin() then
+    raise exception 'เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่ทำรายการนี้ได้';
+  end if;
+end $$;
+
+/** Creates the profile of a new auth user. The very first account becomes the super admin. */
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public, pg_temp
 as $$
+declare
+  v_first boolean;
 begin
   perform pg_advisory_xact_lock(hashtext('profiles_first_admin'));
-  insert into public.profiles (id, email, full_name, role)
+  v_first := not exists (select 1 from public.profiles where is_super_admin);
+  insert into public.profiles (id, email, full_name, role, is_super_admin)
   values (
     new.id,
     coalesce(new.email, ''),
     coalesce(new.raw_user_meta_data ->> 'full_name', ''),
-    case when exists (select 1 from public.profiles where role = 'admin') then 'pending' else 'admin' end
+    case when v_first then 'admin' else 'pending' end,
+    v_first
   )
   on conflict (id) do nothing;
   return new;
@@ -88,48 +143,68 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
-/** Admin only: change a user's role. There must always be at least one admin. */
-create or replace function public.set_user_role(p_user uuid, p_role text) returns void
+-- Replaced by set_user_access (role and company together).
+drop function if exists public.set_user_role(uuid, text);
+
+/**
+ * Super admin only: sets an account's company and its role there. admin/user need a
+ * company; pending (or no company) removes access to business data. A super admin
+ * account cannot be given a company, so it can never read company data.
+ */
+create or replace function public.set_user_access(p_user uuid, p_role text, p_company uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  v_current text;
+  v_target record;
 begin
-  perform public.require_admin();
+  perform public.require_super_admin();
   if p_role is null or p_role not in ('admin', 'user', 'pending') then
     raise exception 'สิทธิ์ผู้ใช้ไม่ถูกต้อง';
   end if;
-  perform pg_advisory_xact_lock(hashtext('profiles_first_admin'));
-  select role into v_current from public.profiles where id = p_user for update;
+  select * into v_target from public.profiles where id = p_user for update;
   if not found then raise exception 'ไม่พบผู้ใช้นี้'; end if;
-  if v_current = 'admin' and p_role <> 'admin'
-     and (select count(*) from public.profiles where role = 'admin') <= 1 then
-    raise exception 'ต้องมีผู้ดูแลระบบอย่างน้อย 1 คน';
+  if v_target.is_super_admin then
+    raise exception 'บัญชีผู้ดูแลระบบใช้จัดการผู้ใช้เท่านั้น ไม่สามารถกำหนดบริษัทหรือสิทธิ์ได้';
   end if;
-  update public.profiles set role = p_role where id = p_user;
+  if p_company is not null and not exists (select 1 from public.companies where id = p_company) then
+    raise exception 'ไม่พบบริษัทนี้';
+  end if;
+  if p_role in ('admin', 'user') and p_company is null then
+    raise exception 'กรุณาเลือกบริษัทให้ผู้ใช้ก่อนกำหนดสิทธิ์';
+  end if;
+  update public.profiles set role = p_role, company_id = p_company where id = p_user;
+end $$;
+
+/** Super admin only: a new company with just a name; its admin fills in the rest. */
+create or replace function public.create_company(p_name text) returns uuid
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_id uuid;
+begin
+  perform public.require_super_admin();
+  if btrim(coalesce(p_name, '')) = '' then raise exception 'กรุณากรอกชื่อบริษัท'; end if;
+  insert into public.companies (name) values (btrim(p_name)) returning id into v_id;
+  return v_id;
+end $$;
+
+/** Super admin only: company names for assigning accounts. No business data. */
+create or replace function public.list_companies()
+returns table (id uuid, name text, member_count integer)
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+begin
+  perform public.require_super_admin();
+  return query
+    select c.id, c.name, (select count(*)::int from public.profiles p where p.company_id = c.id)
+    from public.companies c order by c.created_at, c.id;
 end $$;
 
 -- ------------------------------------------------------------------------------ tables
 
-create table if not exists public.companies (
-  id                uuid primary key default gen_random_uuid(),
-  name              text not null,
-  address           text not null,
-  tax_id            text not null check (tax_id ~ '^[0-9]{13}$'),
-  branch            text not null default 'สำนักงานใหญ่',
-  phone             text,
-  email             text,
-  logo_url          text,
-  bank_name         text,
-  bank_account_name text,
-  bank_account_no   text,
-  -- VAT registered: receipts are issued as ใบเสร็จรับเงิน/ใบกำกับภาษี.
-  vat_registered    boolean not null default true,
-  created_at        timestamptz not null default now()
-);
-
 create table if not exists public.customers (
   id               uuid primary key default gen_random_uuid(),
+  company_id       uuid not null default public.app_company() references public.companies (id) on delete restrict,
   name             text not null check (btrim(name) <> ''),
   address          text not null default '',
   tax_id           text check (tax_id is null or tax_id ~ '^[0-9]{13}$'),
@@ -143,13 +218,17 @@ create table if not exists public.customers (
 
 create table if not exists public.products (
   id             uuid primary key default gen_random_uuid(),
-  code           text not null unique check (btrim(code) <> ''),
+  company_id     uuid not null default public.app_company() references public.companies (id) on delete restrict,
+  code           text not null check (btrim(code) <> ''),
   name           text not null check (btrim(name) <> ''),
   unit           text not null check (btrim(unit) <> ''),
   unit_price     numeric(14, 2) not null default 0 check (unit_price >= 0),
   vat_applicable boolean not null default true,
-  created_at     timestamptz not null default now()
+  created_at     timestamptz not null default now(),
+  constraint products_company_code_key unique (company_id, code)
 );
+
+create index if not exists customers_company_idx on public.customers (company_id);
 
 -- Quotations (QT) and invoices (IV). Totals are written by refresh_totals().
 create table if not exists public.documents (
@@ -160,10 +239,10 @@ create table if not exists public.documents (
   type               text not null check (type in ('QT', 'IV')),
   status             text not null default 'draft'
                      check (status in ('draft', 'sent', 'approved', 'paid', 'cancelled')),
-  doc_number         text not null unique,
+  doc_number         text not null,
   issue_date         date not null,
   due_date           date not null,
-  vat_rate           numeric(5, 2) not null default 7 check (vat_rate between 0 and 100),
+  vat_rate          numeric(5, 2) not null default 7 check (vat_rate between 0 and 100),
   wht_rate           numeric(5, 2) not null default 0 check (wht_rate between 0 and 100),
   notes              text,
   paid_at            date,
@@ -175,7 +254,9 @@ create table if not exists public.documents (
   created_at         timestamptz not null default now(),
   check (due_date >= issue_date),
   check (type = 'IV' or status <> 'paid'),
-  check (type = 'IV' or source_document_id is null)
+  check (type = 'IV' or source_document_id is null),
+  -- Each company has its own running numbers.
+  constraint documents_company_number_key unique (company_id, doc_number)
 );
 
 create index if not exists documents_customer_idx on public.documents (customer_id);
@@ -205,13 +286,14 @@ create table if not exists public.billing_notes (
   id          uuid primary key default gen_random_uuid(),
   company_id  uuid not null references public.companies (id) on delete restrict,
   customer_id uuid not null references public.customers (id) on delete restrict,
-  doc_number  text not null unique,
+  doc_number  text not null,
   issue_date  date not null,
   due_date    date not null,
   status      text not null default 'issued' check (status in ('issued', 'cancelled')),
   notes       text,
   created_at  timestamptz not null default now(),
-  check (due_date >= issue_date)
+  check (due_date >= issue_date),
+  constraint billing_notes_company_number_key unique (company_id, doc_number)
 );
 
 create index if not exists billing_notes_customer_idx on public.billing_notes (customer_id);
@@ -230,7 +312,7 @@ create table if not exists public.receipts (
   id              uuid primary key default gen_random_uuid(),
   company_id      uuid not null references public.companies (id) on delete restrict,
   customer_id     uuid not null references public.customers (id) on delete restrict,
-  doc_number      text not null unique,
+  doc_number      text not null,
   receipt_date    date not null,
   payment_method  text not null check (payment_method in ('cash', 'transfer', 'cheque', 'other')),
   payment_ref     text,
@@ -240,7 +322,8 @@ create table if not exists public.receipts (
   is_tax_invoice  boolean not null default false,
   seller_snapshot jsonb,
   buyer_snapshot  jsonb,
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+  constraint receipts_company_number_key unique (company_id, doc_number)
 );
 
 create index if not exists receipts_customer_idx on public.receipts (customer_id);
@@ -261,24 +344,26 @@ create table if not exists public.tax_invoices (
   id              uuid primary key default gen_random_uuid(),
   company_id      uuid not null references public.companies (id) on delete restrict,
   invoice_id      uuid not null references public.documents (id) on delete restrict,
-  doc_number      text not null unique,
+  doc_number      text not null,
   tax_date        date not null,
   notes           text,
   status          text not null default 'issued' check (status in ('issued', 'cancelled')),
   seller_snapshot jsonb not null,
   buyer_snapshot  jsonb not null,
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+  constraint tax_invoices_company_number_key unique (company_id, doc_number)
 );
 
 create unique index if not exists tax_invoices_one_live_per_invoice
   on public.tax_invoices (invoice_id) where status <> 'cancelled';
 
--- One running number per type and month, e.g. QT202611-001.
+-- One running number per company, type and month, e.g. QT202611-001.
 create table if not exists public.document_sequences (
-  type    text not null,
-  period  text not null,
-  last_no integer not null,
-  primary key (type, period)
+  company_id uuid not null references public.companies (id) on delete cascade,
+  type       text not null,
+  period     text not null,
+  last_no    integer not null,
+  primary key (company_id, type, period)
 );
 
 -- ------------------------------------------------------------------------------ views
@@ -297,7 +382,8 @@ create or replace view public.invoice_rows with (security_invoker = true) as
 select d.id, d.customer_id, d.doc_number, d.issue_date, d.due_date, d.status,
   d.grand_total, d.wht_amount, d.net_total,
   (d.status in ('sent', 'approved') and d.due_date < public.today_th()) as is_overdue,
-  exists (select 1 from public.tax_invoices t where t.invoice_id = d.id and t.status <> 'cancelled') as has_tax_invoice
+  exists (select 1 from public.tax_invoices t where t.invoice_id = d.id and t.status <> 'cancelled') as has_tax_invoice,
+  d.company_id
 from public.documents d
 where d.type = 'IV';
 
@@ -448,18 +534,50 @@ as $$ select jsonb_build_object('name', p_name, 'address', p_address, 'tax_id', 
 
 -- ------------------------------------------------------------------------------ document rules
 
-/** Next running number for the type and month of the date, e.g. IV202611-007. */
-create or replace function public.next_doc_number(p_type text, p_date date) returns text
+drop function if exists public.next_doc_number(text, date);
+
+/** The company's next running number for the type and month of the date, e.g. IV202611-007. */
+create or replace function public.next_doc_number(p_company uuid, p_type text, p_date date) returns text
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
   v_period text := to_char(p_date, 'YYYYMM');
   v_no integer;
 begin
-  insert into public.document_sequences (type, period, last_no) values (p_type, v_period, 1)
-  on conflict (type, period) do update set last_no = public.document_sequences.last_no + 1
+  insert into public.document_sequences (company_id, type, period, last_no) values (p_company, p_type, v_period, 1)
+  on conflict (company_id, type, period) do update set last_no = public.document_sequences.last_no + 1
   returning last_no into v_no;
   return p_type || v_period || '-' || lpad(v_no::text, 3, '0');
+end $$;
+
+/**
+ * The signed-in account's company, ready to appear on documents. Every function that
+ * writes business data goes through this (or app_company()), never "the first company".
+ */
+create or replace function public.issuer() returns public.companies
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+declare
+  v public.companies;
+begin
+  select * into v from public.companies where id = public.app_company();
+  if not found then raise exception 'ไม่มีสิทธิ์ทำรายการนี้ กรุณาติดต่อผู้ดูแลระบบ'; end if;
+  if btrim(v.address) = '' or v.tax_id is null then
+    raise exception 'กรุณากรอกที่อยู่และเลขผู้เสียภาษีของบริษัทที่เมนู "ข้อมูลบริษัท" ก่อนออกเอกสาร';
+  end if;
+  return v;
+end $$;
+
+/** A customer of the signed-in account's company, or a business error. */
+create or replace function public.own_customer(p_customer uuid) returns public.customers
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+declare
+  v public.customers;
+begin
+  select * into v from public.customers where id = p_customer and company_id = public.app_company();
+  if p_customer is null or not found then raise exception 'กรุณาเลือกลูกค้า'; end if;
+  return v;
 end $$;
 
 /** Why a document cannot be edited, or null. Mirrors lib/document-rules.ts editBlockReason. */
@@ -535,7 +653,8 @@ as $$
   insert into public.document_items
     (document_id, product_id, position, description, unit, quantity, unit_price, vat_applicable, amount)
   select p_document,
-    (select p.id from public.products p where p.id = public.try_uuid(e.value ->> 'product_id')),
+    (select p.id from public.products p join public.documents d on d.id = p_document
+      where p.id = public.try_uuid(e.value ->> 'product_id') and p.company_id = d.company_id),
     e.pos,
     btrim(e.value ->> 'description'),
     btrim(e.value ->> 'unit'),
@@ -581,7 +700,7 @@ begin
   insert into public.documents
     (company_id, customer_id, source_document_id, type, doc_number, issue_date, due_date, vat_rate, wht_rate, notes)
   values
-    (p_company, p_customer, p_source, p_type, public.next_doc_number(p_type, p_issue), p_issue, p_due, p_vat, p_wht, p_notes)
+    (p_company, p_customer, p_source, p_type, public.next_doc_number(p_company, p_type, p_issue), p_issue, p_due, p_vat, p_wht, p_notes)
   returning id into v_id;
   perform public.write_items(v_id, p_items);
   perform public.refresh_totals(v_id);
@@ -600,17 +719,13 @@ declare
   v_tax_id text := btrim(coalesce(p ->> 'tax_id', ''));
   v_branch text := coalesce(nullif(btrim(coalesce(p ->> 'branch', '')), ''), 'สำนักงานใหญ่');
 begin
+  -- Admin of the company; edits only their own company.
   perform public.require_admin();
+  v_id := public.app_company();
   if v_name = '' then raise exception 'กรุณากรอกชื่อบริษัท'; end if;
   if v_address = '' then raise exception 'กรุณากรอกที่อยู่บริษัท'; end if;
   if v_tax_id !~ '^[0-9]{13}$' then raise exception 'เลขผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก'; end if;
 
-  perform pg_advisory_xact_lock(hashtext('companies_single'));
-  select id into v_id from public.companies order by created_at, id limit 1;
-  if v_id is null then
-    insert into public.companies (name, address, tax_id, branch) values (v_name, v_address, v_tax_id, v_branch)
-    returning id into v_id;
-  end if;
   update public.companies set
     name = v_name, address = v_address, tax_id = v_tax_id, branch = v_branch,
     phone = nullif(p ->> 'phone', ''),
@@ -621,8 +736,6 @@ begin
     bank_account_no = nullif(p ->> 'bank_account_no', ''),
     vat_registered = coalesce((p ->> 'vat_registered')::boolean, true)
   where id = v_id;
-  -- One issuer: every document prints with the same, current details.
-  update public.documents set company_id = v_id where company_id <> v_id;
   return v_id;
 end $$;
 
@@ -644,10 +757,9 @@ declare
   v_current record;
 begin
   perform public.require_member();
+  v_company := public.app_company();
   if v_type is null or v_type not in ('QT', 'IV') then raise exception 'ประเภทเอกสารไม่ถูกต้อง'; end if;
-  if v_customer is null or not exists (select 1 from public.customers where id = v_customer) then
-    raise exception 'กรุณาเลือกลูกค้า';
-  end if;
+  perform public.own_customer(v_customer);
   v_issue := public.parse_date(p_doc ->> 'issue_date');
   v_due := public.parse_date(p_doc ->> 'due_date');
   if v_due < v_issue then raise exception 'วันครบกำหนดต้องไม่ก่อนวันที่เอกสาร'; end if;
@@ -656,13 +768,12 @@ begin
   perform public.validate_items(p_items);
 
   if p_id is null then
-    select id into v_company from public.companies order by created_at, id limit 1;
-    if v_company is null then raise exception 'ยังไม่มีข้อมูลบริษัทผู้ออกเอกสาร'; end if;
+    v_company := (public.issuer()).id;
     return public.insert_document(v_company, v_customer, null, v_type, v_issue, v_due, v_vat, v_wht, v_notes, p_items);
   end if;
 
-  perform 1 from public.documents where id = p_id for update;
-  select * into v_current from public.document_summaries where id = p_id;
+  perform 1 from public.documents where id = p_id and company_id = v_company for update;
+  select * into v_current from public.document_summaries where id = p_id and company_id = v_company;
   if not found then raise exception 'ไม่พบเอกสาร'; end if;
   if v_current.type <> v_type then raise exception 'เปลี่ยนประเภทเอกสารไม่ได้'; end if;
   if public.edit_block_reason(v_current.type, v_current.status, v_current.has_invoice, v_current.has_tax_invoice) is not null then
@@ -685,7 +796,8 @@ declare
   v_doc record;
 begin
   perform public.require_member();
-  select type, status into v_doc from public.documents where id = p_id for update;
+  select type, status into v_doc from public.documents
+  where id = p_id and company_id = public.app_company() for update;
   if not found then raise exception 'ไม่พบเอกสาร'; end if;
   if p_status is null
      or p_status not in ('draft', 'sent', 'approved', 'paid', 'cancelled')
@@ -712,8 +824,7 @@ declare
   v_term integer;
 begin
   perform public.require_member();
-  perform 1 from public.documents where id = p_id for update;
-  select * into v_qt from public.documents where id = p_id;
+  select * into v_qt from public.documents where id = p_id and company_id = public.app_company() for update;
   if not found then raise exception 'ไม่พบเอกสาร'; end if;
   if v_qt.type <> 'QT' or v_qt.status <> 'approved' then
     raise exception 'แปลงเป็นใบแจ้งหนี้ได้เฉพาะใบเสนอราคาที่อนุมัติแล้ว';
@@ -747,13 +858,16 @@ returns setof public.invoice_rows
 language sql stable set search_path = public, pg_temp
 as $$
   select v.* from public.invoice_rows v
-  where (
-      v.status in ('sent', 'approved') and not exists (
-        select 1 from public.billing_note_items i join public.billing_notes b on b.id = i.billing_note_id
-        where i.invoice_id = v.id and b.status <> 'cancelled' and b.id is distinct from p_note
+  where v.company_id = public.app_company()
+    and (
+      (
+        v.status in ('sent', 'approved') and not exists (
+          select 1 from public.billing_note_items i join public.billing_notes b on b.id = i.billing_note_id
+          where i.invoice_id = v.id and b.status <> 'cancelled' and b.id is distinct from p_note
+        )
       )
+      or v.id in (select invoice_id from public.billing_note_items where billing_note_id = p_note)
     )
-    or v.id in (select invoice_id from public.billing_note_items where billing_note_id = p_note)
   order by v.issue_date, v.doc_number
 $$;
 
@@ -773,22 +887,21 @@ declare
   v_inv uuid;
 begin
   perform public.require_member();
-  if v_customer is null or not exists (select 1 from public.customers where id = v_customer) then
-    raise exception 'กรุณาเลือกลูกค้า';
-  end if;
+  v_company := public.app_company();
+  perform public.own_customer(v_customer);
   v_issue := public.parse_date(p ->> 'issue_date');
   v_due := public.parse_date(p ->> 'due_date');
   if v_due < v_issue then raise exception 'วันนัดชำระต้องไม่ก่อนวันที่วางบิล'; end if;
   if cardinality(v_ids) = 0 then raise exception 'กรุณาเลือกใบแจ้งหนี้อย่างน้อย 1 ใบ'; end if;
 
   if v_id is not null then
-    select status into v_status from public.billing_notes where id = v_id for update;
+    select status into v_status from public.billing_notes where id = v_id and company_id = v_company for update;
     if not found then raise exception 'ไม่พบใบวางบิล'; end if;
     if v_status = 'cancelled' then raise exception 'ใบวางบิลที่ยกเลิกแล้วแก้ไขไม่ได้'; end if;
   end if;
 
   -- Lock the invoices so two billing notes cannot take the same one at once.
-  perform 1 from public.documents where id = any (v_ids) order by id for update;
+  perform 1 from public.documents where id = any (v_ids) and company_id = v_company order by id for update;
   foreach v_inv in array v_ids loop
     select * into v_invoice from public.billable_invoices(v_id) b where b.id = v_inv;
     if v_inv is null or not found then
@@ -804,10 +917,9 @@ begin
     where id = v_id;
     delete from public.billing_note_items where billing_note_id = v_id;
   else
-    select id into v_company from public.companies order by created_at, id limit 1;
-    if v_company is null then raise exception 'ยังไม่มีข้อมูลบริษัทผู้ออกเอกสาร'; end if;
+    v_company := (public.issuer()).id;
     insert into public.billing_notes (company_id, customer_id, doc_number, issue_date, due_date, notes)
-    values (v_company, v_customer, public.next_doc_number('BL', v_issue), v_issue, v_due, v_notes)
+    values (v_company, v_customer, public.next_doc_number(v_company, 'BL', v_issue), v_issue, v_due, v_notes)
     returning id into v_id;
   end if;
 
@@ -822,7 +934,8 @@ language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
   perform public.require_member();
-  update public.billing_notes set status = 'cancelled' where id = p_id and status <> 'cancelled';
+  update public.billing_notes set status = 'cancelled'
+  where id = p_id and company_id = public.app_company() and status <> 'cancelled';
   if not found then raise exception 'ไม่พบใบวางบิล หรือถูกยกเลิกไปแล้ว'; end if;
 end $$;
 
@@ -834,7 +947,8 @@ returns setof public.invoice_rows
 language sql stable set search_path = public, pg_temp
 as $$
   select v.* from public.invoice_rows v
-  where v.status in ('sent', 'approved', 'paid')
+  where v.company_id = public.app_company()
+    and v.status in ('sent', 'approved', 'paid')
     and not exists (
       select 1 from public.receipt_items i join public.receipts r on r.id = i.receipt_id
       where i.invoice_id = v.id and r.status <> 'cancelled'
@@ -867,9 +981,7 @@ declare
   v_id uuid;
 begin
   perform public.require_member();
-  if v_customer is null or not exists (select 1 from public.customers where id = v_customer) then
-    raise exception 'กรุณาเลือกลูกค้า';
-  end if;
+  v_buyer := public.own_customer(v_customer);
   v_date := public.parse_date(p ->> 'receipt_date');
   if v_date > public.today_th() then raise exception 'วันที่รับเงินต้องไม่เป็นวันในอนาคต'; end if;
   if v_method is null or v_method not in ('cash', 'transfer', 'cheque', 'other') then
@@ -878,7 +990,7 @@ begin
 
   if p_id is not null then
     select status, customer_id, receipt_date, is_tax_invoice into v_current
-    from public.receipts where id = p_id for update;
+    from public.receipts where id = p_id and company_id = public.app_company() for update;
     if not found then raise exception 'ไม่พบใบเสร็จรับเงิน'; end if;
     if v_current.status = 'cancelled' then raise exception 'ใบเสร็จที่ยกเลิกแล้วแก้ไขไม่ได้'; end if;
     if v_current.customer_id <> v_customer then
@@ -897,7 +1009,7 @@ begin
 
   v_ids := public.uuid_list(p -> 'invoice_ids');
   if cardinality(v_ids) = 0 then raise exception 'กรุณาเลือกใบแจ้งหนี้อย่างน้อย 1 ใบ'; end if;
-  perform 1 from public.documents where id = any (v_ids) order by id for update;
+  perform 1 from public.documents where id = any (v_ids) and company_id = public.app_company() order by id for update;
   foreach v_inv in array v_ids loop
     select * into v_invoice from public.receivable_invoices() r where r.id = v_inv;
     if v_inv is null or not found then
@@ -915,16 +1027,14 @@ begin
     raise exception 'ใบแจ้งหนี้ที่ออกใบกำกับภาษีแล้วกับที่ยังไม่ได้ออก ต้องออกใบเสร็จแยกกัน';
   end if;
 
-  select * into v_company from public.companies order by created_at, id limit 1;
-  if not found then raise exception 'ยังไม่มีข้อมูลบริษัทผู้ออกเอกสาร'; end if;
-  select * into v_buyer from public.customers where id = v_customer;
+  v_company := public.issuer();
   -- VAT was already invoiced on delivery, so this receipt must not be a second tax invoice.
   v_is_tax := v_company.vat_registered and v_with_tax = 0;
 
   insert into public.receipts (company_id, customer_id, doc_number, receipt_date, payment_method, payment_ref,
     notes, is_tax_invoice, seller_snapshot, buyer_snapshot)
   values (
-    v_company.id, v_customer, public.next_doc_number('RC', v_date), v_date, v_method, v_ref, v_notes, v_is_tax,
+    v_company.id, v_customer, public.next_doc_number(v_company.id, 'RC', v_date), v_date, v_method, v_ref, v_notes, v_is_tax,
     case when v_is_tax then public.party(v_company.name, v_company.address, v_company.tax_id, v_company.branch) end,
     case when v_is_tax then public.party(v_buyer.name, v_buyer.address, v_buyer.tax_id, v_buyer.branch) end
   )
@@ -943,7 +1053,8 @@ language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
   perform public.require_member();
-  update public.receipts set status = 'cancelled' where id = p_id and status <> 'cancelled';
+  update public.receipts set status = 'cancelled'
+  where id = p_id and company_id = public.app_company() and status <> 'cancelled';
   if not found then raise exception 'ไม่พบใบเสร็จรับเงิน หรือถูกยกเลิกไปแล้ว'; end if;
   update public.documents d set status = i.prev_status, paid_at = i.prev_paid_at
   from public.receipt_items i
@@ -960,9 +1071,9 @@ declare
   v_vat boolean;
   v_inv record;
 begin
-  select vat_registered into v_vat from public.companies order by created_at, id limit 1;
+  select vat_registered into v_vat from public.companies where id = public.app_company();
   if not coalesce(v_vat, false) then return 'บริษัทยังไม่ได้ตั้งค่าเป็นผู้จดทะเบียนภาษีมูลค่าเพิ่ม'; end if;
-  select * into v_inv from public.document_summaries where id = p_invoice;
+  select * into v_inv from public.document_summaries where id = p_invoice and company_id = public.app_company();
   if not found or v_inv.type <> 'IV' then return 'ไม่พบใบแจ้งหนี้'; end if;
   if v_inv.status = 'draft' then return 'ต้องส่งใบแจ้งหนี้ก่อนจึงจะออกใบกำกับภาษีได้'; end if;
   if v_inv.status = 'cancelled' then return 'ใบแจ้งหนี้นี้ถูกยกเลิกแล้ว'; end if;
@@ -988,7 +1099,7 @@ declare
   v_id uuid;
 begin
   perform public.require_member();
-  perform 1 from public.documents where id = p_invoice for update;
+  perform 1 from public.documents where id = p_invoice and company_id = public.app_company() for update;
   v_block := public.tax_invoice_block_reason(p_invoice);
   if v_block is not null then raise exception '%', v_block; end if;
   v_date := public.parse_date(p_tax_date);
@@ -996,11 +1107,11 @@ begin
   select * into v_inv from public.documents where id = p_invoice;
   if v_date < v_inv.issue_date then raise exception 'วันที่ส่งมอบต้องไม่ก่อนวันที่ของใบแจ้งหนี้'; end if;
 
-  select * into v_company from public.companies order by created_at, id limit 1;
-  select * into v_buyer from public.customers where id = v_inv.customer_id;
+  v_company := public.issuer();
+  v_buyer := public.own_customer(v_inv.customer_id);
   insert into public.tax_invoices (company_id, invoice_id, doc_number, tax_date, notes, seller_snapshot, buyer_snapshot)
   values (
-    v_company.id, p_invoice, public.next_doc_number('TX', v_date), v_date,
+    v_company.id, p_invoice, public.next_doc_number(v_company.id, 'TX', v_date), v_date,
     nullif(btrim(coalesce(p_notes, '')), ''),
     public.party(v_company.name, v_company.address, v_company.tax_id, v_company.branch),
     public.party(v_buyer.name, v_buyer.address, v_buyer.tax_id, v_buyer.branch)
@@ -1015,7 +1126,8 @@ language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
   perform public.require_member();
-  update public.tax_invoices set status = 'cancelled' where id = p_id and status <> 'cancelled';
+  update public.tax_invoices set status = 'cancelled'
+  where id = p_id and company_id = public.app_company() and status <> 'cancelled';
   if not found then raise exception 'ไม่พบใบกำกับภาษี หรือถูกยกเลิกไปแล้ว'; end if;
 end $$;
 
@@ -1034,13 +1146,14 @@ declare
 begin
   perform public.require_admin();
   if p_type in ('QT', 'IV') then
-    select status into v_status from public.documents where id = p_id and type = p_type for update;
+    select status into v_status from public.documents
+    where id = p_id and type = p_type and company_id = public.app_company() for update;
   elsif p_type = 'BL' then
-    select status into v_status from public.billing_notes where id = p_id for update;
+    select status into v_status from public.billing_notes where id = p_id and company_id = public.app_company() for update;
   elsif p_type = 'RC' then
-    select status into v_status from public.receipts where id = p_id for update;
+    select status into v_status from public.receipts where id = p_id and company_id = public.app_company() for update;
   elsif p_type = 'TX' then
-    select status into v_status from public.tax_invoices where id = p_id for update;
+    select status into v_status from public.tax_invoices where id = p_id and company_id = public.app_company() for update;
   else
     raise exception 'ประเภทเอกสารไม่ถูกต้อง';
   end if;
@@ -1090,7 +1203,8 @@ as $$
     select m.month, m.i, coalesce(sum(d.subtotal), 0) as sales
     from months m
     left join public.documents d
-      on d.type = 'IV' and d.status in ('sent', 'approved', 'paid')
+      on d.company_id = public.app_company()
+     and d.type = 'IV' and d.status in ('sent', 'approved', 'paid')
      and date_trunc('month', d.issue_date)::date = m.month
     group by m.month, m.i
   ), recv as (
@@ -1098,7 +1212,8 @@ as $$
       coalesce(sum(net_total), 0) as arrears_amount,
       (count(*) filter (where due_date < public.today_th()))::int as overdue_count,
       coalesce(sum(net_total) filter (where due_date < public.today_th()), 0) as overdue_amount
-    from public.documents where type = 'IV' and status in ('sent', 'approved')
+    from public.documents
+    where company_id = public.app_company() and type = 'IV' and status in ('sent', 'approved')
   )
   select jsonb_build_object(
     'sales_this_month', (select sales from sales where i = 0),
@@ -1116,6 +1231,8 @@ as $$
 $$;
 
 -- ------------------------------------------------------------------------------ row level security
+-- Every policy is scoped to the company of the signed-in account (app_company()), so an
+-- account only ever sees its own company's rows. The super admin has no company.
 
 alter table public.profiles           enable row level security;
 alter table public.companies          enable row level security;
@@ -1130,37 +1247,65 @@ alter table public.receipt_items      enable row level security;
 alter table public.tax_invoices       enable row level security;
 alter table public.document_sequences enable row level security; -- no policies: functions only
 
+-- Profiles: your own, or every account for the super admin (to manage access).
 drop policy if exists "own profile or admin" on public.profiles;
-create policy "own profile or admin" on public.profiles
-  for select to authenticated using (id = auth.uid() or public.is_admin());
+drop policy if exists "own profile or super admin" on public.profiles;
+create policy "own profile or super admin" on public.profiles
+  for select to authenticated using (id = auth.uid() or public.is_super_admin());
+
+drop policy if exists "members read" on public.companies;
+drop policy if exists "own company" on public.companies;
+create policy "own company" on public.companies
+  for select to authenticated using (id = public.app_company());
 
 do $$
 declare
   t text;
 begin
-  foreach t in array array['companies', 'customers', 'products', 'documents', 'document_items',
-    'billing_notes', 'billing_note_items', 'receipts', 'receipt_items', 'tax_invoices'] loop
+  foreach t in array array['customers', 'products', 'documents', 'billing_notes', 'receipts', 'tax_invoices'] loop
     execute format('drop policy if exists "members read" on public.%I', t);
-    execute format('create policy "members read" on public.%I for select to authenticated using (public.is_member())', t);
+    execute format('drop policy if exists "own company" on public.%I', t);
+    execute format(
+      'create policy "own company" on public.%I for select to authenticated using (company_id = public.app_company())', t);
   end loop;
 end $$;
 
--- Customers and products are edited directly by members; only admins delete.
-drop policy if exists "members insert" on public.customers;
-drop policy if exists "members update" on public.customers;
-drop policy if exists "admins delete" on public.customers;
-create policy "members insert" on public.customers for insert to authenticated with check (public.is_member());
-create policy "members update" on public.customers for update to authenticated
-  using (public.is_member()) with check (public.is_member());
-create policy "admins delete" on public.customers for delete to authenticated using (public.is_admin());
+-- Line tables follow the company of their parent.
+drop policy if exists "members read" on public.document_items;
+drop policy if exists "own company" on public.document_items;
+create policy "own company" on public.document_items for select to authenticated using (
+  exists (select 1 from public.documents d where d.id = document_id and d.company_id = public.app_company()));
 
-drop policy if exists "members insert" on public.products;
-drop policy if exists "members update" on public.products;
-drop policy if exists "admins delete" on public.products;
-create policy "members insert" on public.products for insert to authenticated with check (public.is_member());
-create policy "members update" on public.products for update to authenticated
-  using (public.is_member()) with check (public.is_member());
-create policy "admins delete" on public.products for delete to authenticated using (public.is_admin());
+drop policy if exists "members read" on public.billing_note_items;
+drop policy if exists "own company" on public.billing_note_items;
+create policy "own company" on public.billing_note_items for select to authenticated using (
+  exists (select 1 from public.billing_notes b where b.id = billing_note_id and b.company_id = public.app_company()));
+
+drop policy if exists "members read" on public.receipt_items;
+drop policy if exists "own company" on public.receipt_items;
+create policy "own company" on public.receipt_items for select to authenticated using (
+  exists (select 1 from public.receipts r where r.id = receipt_id and r.company_id = public.app_company()));
+
+-- Customers and products are edited directly by members of the company; only its admins delete.
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['customers', 'products'] loop
+    execute format('drop policy if exists "members insert" on public.%I', t);
+    execute format('drop policy if exists "members update" on public.%I', t);
+    execute format('drop policy if exists "admins delete" on public.%I', t);
+    execute format(
+      'create policy "members insert" on public.%I for insert to authenticated
+         with check (company_id = public.app_company())', t);
+    execute format(
+      'create policy "members update" on public.%I for update to authenticated
+         using (company_id = public.app_company()) with check (company_id = public.app_company())', t);
+    execute format(
+      'create policy "admins delete" on public.%I for delete to authenticated
+         using (company_id = public.app_company() and public.is_admin())', t);
+  end loop;
+end $$;
 
 -- ------------------------------------------------------------------------------ privileges
 
@@ -1172,8 +1317,11 @@ grant insert, update, delete on public.customers, public.products to authenticat
 
 -- Callable through the API by signed-in users (each checks the role itself).
 grant execute on function
-  public.today_th(), public.app_role(), public.is_member(), public.is_admin(),
-  public.set_user_role(uuid, text),
+  public.today_th(), public.app_role(), public.app_company(), public.is_member(), public.is_admin(),
+  public.is_super_admin(),
+  public.set_user_access(uuid, text, uuid),
+  public.create_company(text),
+  public.list_companies(),
   public.save_company(jsonb),
   public.save_document(uuid, jsonb, jsonb),
   public.set_document_status(uuid, text),

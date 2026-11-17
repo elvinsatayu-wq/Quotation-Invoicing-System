@@ -1,4 +1,4 @@
-import { getCurrentUser, ROLE_LABEL } from "@/lib/auth";
+import { getCurrentUser, ROLE_LABEL, SUPER_ADMIN_LABEL } from "@/lib/auth";
 import { logout } from "@/lib/auth-actions";
 
 /** Signed-in user and logout button, styled for the navy sidebar. Reads the session, so render it under <Suspense>. */
@@ -29,7 +29,7 @@ export async function UserMenu({ compact }: { compact?: boolean }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-white">{user.name}</p>
         <p className="truncate text-xs text-white/60">{user.email}</p>
-        <p className="truncate text-xs text-white/60">{ROLE_LABEL[user.role]}</p>
+        <p className="truncate text-xs text-white/60">{user.superAdmin ? SUPER_ADMIN_LABEL : ROLE_LABEL[user.role]}</p>
         <div className="-ml-2 mt-1">{button}</div>
       </div>
     </div>

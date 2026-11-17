@@ -77,7 +77,7 @@ const LINKS = [
   {
     href: "/users",
     label: "ผู้ใช้งาน",
-    adminOnly: true,
+    superAdminOnly: true,
     icon: icon(
       <>
         <circle cx="12" cy="8" r="4" />
@@ -87,12 +87,13 @@ const LINKS = [
   },
 ];
 
-export function Nav({ isAdmin = false }: { isAdmin?: boolean }) {
+/** Company members get the business menu; the super admin only manages accounts. */
+export function Nav({ superAdmin = false }: { superAdmin?: boolean }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-col lg:px-3 lg:pb-0">
-      {LINKS.filter((link) => isAdmin || !("adminOnly" in link)).map(({ href, label, icon, also = [] }) => {
+      {LINKS.filter((link) => superAdmin === ("superAdminOnly" in link)).map(({ href, label, icon, also = [] }) => {
         const active =
           href === "/" ? pathname === "/" : [href, ...also].some((prefix) => pathname.startsWith(prefix));
         return (

@@ -1,36 +1,54 @@
 import { PageHeader } from "@/components/ui";
-import { UserRoleSelect } from "@/components/user-role-select";
-import { requireAdmin } from "@/lib/auth";
-import { listProfiles } from "@/lib/data";
+import { NewCompanyForm, UserAccess } from "@/components/user-access";
+import { requireSuperAdmin, SUPER_ADMIN_LABEL } from "@/lib/auth";
+import { listCompanies, listProfiles } from "@/lib/data";
 import { formatDate } from "@/lib/format";
 
 export default async function UsersPage() {
-  const me = await requireAdmin();
-  const profiles = await listProfiles();
-  const waiting = profiles.filter((p) => p.role === "pending").length;
+  const me = await requireSuperAdmin();
+  const [profiles, companies] = await Promise.all([listProfiles(), listCompanies()]);
+  const waiting = profiles.filter((p) => !p.is_super_admin && (p.role === "pending" || !p.company_id)).length;
 
   return (
     <>
       <PageHeader
         title="ผู้ใช้งาน"
-        subtitle={`ทั้งหมด ${profiles.length} บัญชี${waiting ? ` · รออนุมัติ ${waiting} บัญชี` : ""}`}
+        subtitle={`ทั้งหมด ${profiles.length} บัญชี · ${companies.length} บริษัท${waiting ? ` · รออนุมัติ ${waiting} บัญชี` : ""}`}
       />
-      <div className="card mb-4 p-4 text-sm text-muted">
+      <div className="card mb-4 grid gap-1 p-4 text-sm text-muted">
         <p>
-          <span className="font-medium text-ink">Admin</span> ทำได้ทุกอย่าง รวมถึงแก้ข้อมูลบริษัท ลบข้อมูล และจัดการผู้ใช้ ·{" "}
-          <span className="font-medium text-ink">User</span> ดูข้อมูลทั้งหมด สร้างและแก้ไขเอกสาร ลูกค้า และสินค้าได้ แต่ลบไม่ได้ ·{" "}
+          ข้อมูลของแต่ละบริษัท (ลูกค้า สินค้า เอกสาร) แยกขาดจากกัน บัญชีจะเห็นเฉพาะข้อมูลของบริษัทที่กำหนดให้เท่านั้น
+          ส่วนบัญชีผู้ดูแลระบบใช้จัดการผู้ใช้อย่างเดียว ไม่เห็นข้อมูลของบริษัทใด
+        </p>
+        <p>
+          <span className="font-medium text-ink">ผู้ดูแลบริษัท (Admin)</span> ทำได้ทุกอย่างในบริษัท รวมถึงแก้ข้อมูลบริษัทและลบข้อมูล ·{" "}
+          <span className="font-medium text-ink">User</span> สร้างและแก้ไขเอกสาร ลูกค้า และสินค้าได้ แต่ลบไม่ได้ ·{" "}
           <span className="font-medium text-ink">รออนุมัติ</span> เข้าดูข้อมูลไม่ได้
         </p>
-        <p className="mt-1">ผู้ใช้ใหม่สมัครเองได้ที่หน้า “สมัครใช้งาน” แล้วจะอยู่ในสถานะรออนุมัติจนกว่าผู้ดูแลจะกำหนดสิทธิ์ให้</p>
+        <p>ผู้ใช้ใหม่สมัครเองได้ที่หน้า “สมัครใช้งาน” แล้วจะรออนุมัติจนกว่าจะกำหนดบริษัทและสิทธิ์ให้</p>
       </div>
+
+      <div className="card mb-4 p-4">
+        <NewCompanyForm />
+        {companies.length > 0 && (
+          <ul className="mt-3 flex flex-wrap gap-2 text-sm">
+            {companies.map((c) => (
+              <li key={c.id} className="rounded-full bg-accent-soft px-3 py-1 text-accent">
+                {c.name} <span className="text-accent/70">· {c.member_count} บัญชี</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       <div className="card table-scroll">
-        <table className="data-table min-w-[640px]">
+        <table className="data-table min-w-[760px]">
           <thead>
             <tr>
               <th>ชื่อ</th>
               <th>อีเมล</th>
               <th>สมัครเมื่อ</th>
-              <th className="text-right">สิทธิ์</th>
+              <th className="text-right">บริษัท · สิทธิ์</th>
             </tr>
           </thead>
           <tbody>
@@ -43,7 +61,17 @@ export default async function UsersPage() {
                 <td>{profile.email}</td>
                 <td className="whitespace-nowrap">{formatDate(profile.created_at.slice(0, 10))}</td>
                 <td className="text-right">
-                  <UserRoleSelect userId={profile.id} email={profile.email} role={profile.role} />
+                  {profile.is_super_admin ? (
+                    <span className="text-sm text-muted">{SUPER_ADMIN_LABEL}</span>
+                  ) : (
+                    <UserAccess
+                      userId={profile.id}
+                      email={profile.email}
+                      role={profile.role}
+                      companyId={profile.company_id}
+                      companies={companies}
+                    />
+                  )}
                 </td>
               </tr>
             ))}

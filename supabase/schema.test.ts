@@ -7,11 +7,16 @@ import type { PGlite } from "@electric-sql/pglite";
 import { as, openTestDatabase, signUp } from "./test-helpers.ts";
 
 let db: PGlite;
+let superAdmin: string;
 let admin: string;
 let staff: string;
 let pending: string;
+let otherAdmin: string;
+let companyA: string;
+let companyB: string;
 let customerA: string;
 let customerB: string;
+let otherCustomer: string;
 
 const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());
 const period = today.slice(0, 4) + today.slice(5, 7);
@@ -60,29 +65,119 @@ const setStatus = (id: string, status: string) => q(staff, "select public.set_do
 
 before(async () => {
   db = await openTestDatabase();
+  superAdmin = await signUp(db, "root@example.com");
   admin = await signUp(db, "owner@example.com");
   staff = await signUp(db, "staff@example.com");
   pending = await signUp(db, "new@example.com");
-  await q(admin, "select public.set_user_role($1, 'user')", [staff]);
+  otherAdmin = await signUp(db, "rival@example.com");
+
+  companyA = (await one<{ id: string }>(superAdmin, "select public.create_company('บริษัท ทดสอบ') as id")).id;
+  companyB = (await one<{ id: string }>(superAdmin, "select public.create_company('บริษัท อื่น') as id")).id;
+  await q(superAdmin, "select public.set_user_access($1, 'admin', $2)", [admin, companyA]);
+  await q(superAdmin, "select public.set_user_access($1, 'user', $2)", [staff, companyA]);
+  await q(superAdmin, "select public.set_user_access($1, 'admin', $2)", [otherAdmin, companyB]);
+
+  // a new company has a name only: no documents until its admin fills in the details
+  await rejects(staff, "select public.save_document(null, $1, $2)", [
+    { type: "QT", customer_id: "", issue_date: today, due_date: today, vat_rate: 7, wht_rate: 0 }, [item(1, 1)],
+  ], /กรุณาเลือกลูกค้า/);
   await q(admin, "select public.save_company($1)", [
     { name: "บริษัท ทดสอบ จำกัด", address: "กรุงเทพฯ", tax_id: "0105500000001", branch: "", vat_registered: true },
   ]);
   customerA = (await one<{ id: string }>(staff, "insert into customers (name, tax_id, credit_term_days) values ('ลูกค้า A', '0105500000011', 15) returning id")).id;
   customerB = (await one<{ id: string }>(staff, "insert into customers (name) values ('ลูกค้า B') returning id")).id;
+  otherCustomer = (await one<{ id: string }>(otherAdmin, "insert into customers (name) values ('ลูกค้าของบริษัทอื่น') returning id")).id;
+  await rejects(otherAdmin, "select public.save_document(null, $1, $2)", [
+    { type: "QT", customer_id: otherCustomer, issue_date: today, due_date: today, vat_rate: 7, wht_rate: 0 }, [item(1, 1)],
+  ], /กรุณากรอกที่อยู่และเลขผู้เสียภาษี/);
+  await q(otherAdmin, "select public.save_company($1)", [
+    { name: "บริษัท อื่น จำกัด", address: "เชียงใหม่", tax_id: "0105500000002", branch: "", vat_registered: true },
+  ]);
 });
 
-test("roles: first account is admin, later ones wait for approval", async () => {
-  const roles = await q<{ email: string; role: string }>(admin, "select email, role from profiles order by created_at, email");
+test("roles: first account is the super admin, later ones wait for approval", async () => {
+  const roles = await q<{ email: string; role: string; is_super_admin: boolean; company_id: string | null }>(
+    superAdmin, "select email, role, is_super_admin, company_id from profiles order by created_at, email");
   assert.deepEqual(
-    Object.fromEntries(roles.map((r) => [r.email, r.role])),
-    { "owner@example.com": "admin", "staff@example.com": "user", "new@example.com": "pending" },
+    Object.fromEntries(roles.map((r) => [r.email, [r.role, r.is_super_admin, r.company_id]])),
+    {
+      "root@example.com": ["admin", true, null],
+      "owner@example.com": ["admin", false, companyA],
+      "staff@example.com": ["user", false, companyA],
+      "new@example.com": ["pending", false, null],
+      "rival@example.com": ["admin", false, companyB],
+    },
   );
-  // a user sees only their own profile
+  // everyone else sees only their own profile
   assert.equal((await q(staff, "select * from profiles")).length, 1);
-  // only admins change roles, and the last admin cannot be demoted
-  await rejects(staff, "select public.set_user_role($1, 'admin')", [staff], /เฉพาะผู้ดูแลระบบ/);
-  await rejects(admin, "select public.set_user_role($1, 'user')", [admin], /อย่างน้อย 1 คน/);
-  await rejects(admin, "select public.set_user_role($1, 'boss')", [staff], /ไม่ถูกต้อง/);
+  assert.equal((await q(admin, "select * from profiles")).length, 1);
+  // only the super admin manages access; a company admin cannot
+  await rejects(admin, "select public.set_user_access($1, 'admin', $2)", [staff, companyA], /เฉพาะผู้ดูแลระบบ/);
+  await rejects(admin, "select public.create_company('x')", [], /เฉพาะผู้ดูแลระบบ/);
+  await rejects(admin, "select * from public.list_companies()", [], /เฉพาะผู้ดูแลระบบ/);
+  await rejects(superAdmin, "select public.set_user_access($1, 'boss', $2)", [staff, companyA], /ไม่ถูกต้อง/);
+  await rejects(superAdmin, "select public.set_user_access($1, 'user', null)", [pending], /เลือกบริษัท/);
+  // the super admin can never be put into a company, so it can never read company data
+  await rejects(superAdmin, "select public.set_user_access($1, 'admin', $2)", [superAdmin, companyA], /จัดการผู้ใช้เท่านั้น/);
+  await rejects(superAdmin, "update profiles set company_id = $1 where id = $2", [companyA, superAdmin], /permission denied/);
+  const companies = await q<{ name: string }>(superAdmin, "select name from public.list_companies()");
+  assert.deepEqual(companies.map((c) => c.name), ["บริษัท ทดสอบ จำกัด", "บริษัท อื่น จำกัด"]);
+});
+
+test("isolation: the super admin and other companies see none of a company's data", async () => {
+  const qt = await newDoc("QT");
+  const iv = await newDoc("IV");
+  await setStatus(iv, "sent");
+  await q(staff, "insert into products (code, name, unit) values ('P-1', 'สินค้า', 'ชิ้น')");
+  const tables = ["companies", "customers", "products", "documents", "document_items", "billing_notes",
+    "billing_note_items", "receipts", "receipt_items", "tax_invoices", "document_list", "document_summaries",
+    "invoice_rows", "billing_note_summaries", "receipt_summaries", "tax_invoice_summaries"];
+  for (const t of tables) {
+    assert.equal((await q(superAdmin, `select * from ${t}`)).length, 0, `super admin reads nothing from ${t}`);
+  }
+  // the other company sees only its own rows
+  assert.deepEqual((await q<{ id: string }>(otherAdmin, "select id from companies")).map((r) => r.id), [companyB]);
+  assert.deepEqual((await q<{ id: string }>(otherAdmin, "select id from customers")).map((r) => r.id), [otherCustomer]);
+  for (const t of ["products", "documents", "document_items", "document_list", "invoice_rows"]) {
+    assert.equal((await q(otherAdmin, `select * from ${t}`)).length, 0, `other company reads nothing from ${t}`);
+  }
+  assert.equal((await q(otherAdmin, "select * from billable_invoices(null)")).length, 0);
+  assert.equal((await q(otherAdmin, "select * from receivable_invoices()")).length, 0);
+  assert.equal(Number((await one<{ s: Row }>(superAdmin, "select public.dashboard_summary() as s")).s.arrears_count), 0);
+
+  // functions treat another company's ids as if they did not exist
+  const doc = { type: "QT", customer_id: customerA, issue_date: today, due_date: today, vat_rate: 7, wht_rate: 0 };
+  await rejects(otherAdmin, "select public.save_document(null, $1, $2)", [doc, [item(1, 1)]], /กรุณาเลือกลูกค้า/);
+  await rejects(otherAdmin, "select public.save_document($1, $2, $3)", [qt, { ...doc, customer_id: otherCustomer }, [item(1, 1)]], /ไม่พบเอกสาร/);
+  await rejects(otherAdmin, "select public.set_document_status($1, 'cancelled')", [iv], /ไม่พบเอกสาร/);
+  await rejects(otherAdmin, "select public.convert_quotation_to_invoice($1)", [qt], /ไม่พบเอกสาร/);
+  await rejects(otherAdmin, "select public.delete_document('QT', $1)", [qt], /ไม่พบเอกสาร/);
+  await rejects(otherAdmin, "select public.save_billing_note(null, $1)",
+    [{ customer_id: otherCustomer, issue_date: today, due_date: today, invoice_ids: [iv] }], /วางบิลไม่ได้/);
+  await rejects(otherAdmin, "select public.save_receipt(null, $1)",
+    [{ customer_id: otherCustomer, receipt_date: today, payment_method: "cash", invoice_ids: [iv] }], /ออกใบเสร็จไม่ได้/);
+  await rejects(otherAdmin, "select public.issue_tax_invoice($1, $2, '')", [iv, today], /ไม่พบใบแจ้งหนี้/);
+  await rejects(superAdmin, "select public.save_document(null, $1, $2)", [doc, [item(1, 1)]], /ไม่มีสิทธิ์/);
+  await rejects(superAdmin, "select public.save_company($1)", [{ name: "x", address: "x", tax_id: "0105500000009" }], /เฉพาะผู้ดูแลระบบ/);
+
+  // direct writes cannot reach rows of another company or move rows into it
+  await rejects(otherAdmin, "insert into customers (company_id, name) values ($1, 'แทรก')", [companyA], /row-level security/);
+  await rejects(superAdmin, "insert into customers (name) values ('x')", [], /row-level security|null value/);
+  await q(otherAdmin, "update customers set name = 'ถูกแก้' where id = $1", [customerA]);
+  await q(otherAdmin, "delete from customers where id = $1", [customerA]);
+  assert.equal((await one(staff, "select name from customers where id = $1", [customerA])).name, "ลูกค้า A");
+  await rejects(otherAdmin, "update customers set company_id = $1 where id = $2", [companyA, otherCustomer], /row-level security/);
+
+  // each company has its own running numbers and product codes
+  const { id: otherDoc } = await one<{ id: string }>(otherAdmin, "select public.save_document(null, $1, $2) as id",
+    [{ ...doc, customer_id: otherCustomer }, [item(1, 1)]]);
+  assert.equal((await one(otherAdmin, "select doc_number from documents where id = $1", [otherDoc])).doc_number, `QT${period}-001`);
+  await q(otherAdmin, "insert into products (code, name, unit) values ('P-1', 'สินค้า', 'ชิ้น')");
+  // a product id of another company is not linked to a document line
+  const productA = (await one<{ id: string }>(staff, "select id from products where code = 'P-1'")).id;
+  const { id: linked } = await one<{ id: string }>(otherAdmin, "select public.save_document(null, $1, $2) as id",
+    [{ ...doc, customer_id: otherCustomer }, [{ ...item(1, 1), product_id: productA }]]);
+  assert.equal((await one(otherAdmin, "select product_id from document_items where document_id = $1", [linked])).product_id, null);
 });
 
 test("access: pending and anonymous users see and change nothing", async () => {
@@ -97,7 +192,7 @@ test("access: pending and anonymous users see and change nothing", async () => {
 test("access: users cannot bypass the functions or do admin work", async () => {
   const id = await newDoc("QT");
   await rejects(staff, "update documents set status = 'approved' where id = $1", [id], /permission denied|row-level security/);
-  await rejects(staff, "insert into document_sequences values ('QT', '209901', 1)", [], /permission denied|row-level security/);
+  await rejects(staff, "insert into document_sequences values ($1, 'QT', '209901', 1)", [companyA], /permission denied|row-level security/);
   await rejects(staff, "select public.save_company('{}')", [], /เฉพาะผู้ดูแลระบบ/);
   await rejects(staff, "select public.delete_document('QT', $1)", [id], /เฉพาะผู้ดูแลระบบ/);
   // a user's delete of a customer is silently filtered by RLS

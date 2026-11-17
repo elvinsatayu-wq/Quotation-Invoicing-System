@@ -1,6 +1,6 @@
 // Reads used by pages. Each one checks the session first (Data Access Layer); the database
 // then applies row level security to every query (see supabase/schema.sql).
-import { requireUser } from "./auth";
+import { requireSuperAdmin, requireUser } from "./auth";
 import { createClient, must, type Supabase } from "./supabase/server";
 import type {
   BillableInvoice,
@@ -319,11 +319,29 @@ export async function getTaxInvoiceTarget(invoiceId: string) {
   return { invoice, items, blocked };
 }
 
-// ---------------------------------------------------------------- users (admin)
+// ---------------------------------------------------------------- accounts (super admin)
+// Account and company names only: the super admin never reads any company's business data.
 
-export type Profile = { id: string; email: string; full_name: string; role: "admin" | "user" | "pending"; created_at: string };
+export type Profile = {
+  id: string;
+  email: string;
+  full_name: string;
+  role: "admin" | "user" | "pending";
+  company_id: string | null;
+  is_super_admin: boolean;
+  created_at: string;
+};
+
+export type CompanyOption = { id: string; name: string; member_count: number };
 
 export async function listProfiles(): Promise<Profile[]> {
-  const supabase = await client();
+  await requireSuperAdmin();
+  const supabase = await createClient();
   return must(await supabase.from("profiles").select("*").order("created_at")) as Profile[];
+}
+
+export async function listCompanies(): Promise<CompanyOption[]> {
+  await requireSuperAdmin();
+  const supabase = await createClient();
+  return must(await supabase.rpc("list_companies")) as CompanyOption[];
 }

@@ -10,6 +10,7 @@ export const metadata: Metadata = { title: "รออนุมัติ · ร�
 async function PendingNotice() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.superAdmin) redirect("/users");
   if (user.role !== "pending") redirect("/");
   return (
     <p className="mt-1.5 text-sm text-muted">
